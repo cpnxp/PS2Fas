@@ -24,7 +24,10 @@ namespace PS2Fas
         public const String restapi = "https://api2.2fas.com";
         public const String wssapi = "wss://ws.2fas.com";
         public const String qruri = "twofas_c://";
-        public static String configPath = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile) + "\\.ps2fas";
+        public static String configPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),".ps2fas");
+        public static String configFilePath = Path.Combine(configPath, "id.conf");
+        public static String pubPemFilePath = Path.Combine(configPath, "pub.pem");
+        public static String rsaPemFilePath = Path.Combine(configPath, "rsa.pem");
         public String extensionId;
         private static readonly HttpClient client = new HttpClient();
 
@@ -36,23 +39,31 @@ namespace PS2Fas
                 throw new Exception("Call Connect-2Fas to do inital config");
             }
 
-            extensionId = File.ReadLines(configPath + "\\id.conf").First();
+            extensionId = File.ReadLines(configFilePath).First();
+            
+        }
+
+        static PS2FasInstance()
+        {
             client.BaseAddress = new Uri(restapi);
         }
 
         //Creates config files - id.conf, rsa.pem and pub.pem
-        public static void Register()
+        public static void Register(bool force)
         {
-            if (File.Exists(configPath + "\\id.conf"))
+            if (File.Exists(configPath) && (force != true))
             {
                 throw new Exception("Already Configured");
             }
-            client.BaseAddress = new Uri(restapi);
 
+            if (force)
+            {
+                Directory.Delete(configPath, true);
+            }
 
             Directory.CreateDirectory(configPath);
             GenRSAKey();
-            String modPem = File.ReadAllText(configPath + "\\pub.pem");
+            String modPem = File.ReadAllText(pubPemFilePath);
             modPem = modPem.Replace("-----BEGIN PUBLIC KEY-----", "");
             modPem = modPem.Replace("-----END PUBLIC KEY-----", "");
             modPem = modPem.Replace("\r", "");
@@ -63,7 +74,7 @@ namespace PS2Fas
             var content = new StringContent(browserInfoJson, Encoding.UTF8, "application/json");
             var response = client.PostAsync("browser_extensions", content).Result;
             RegResponse resp = JsonConvert.DeserializeObject<RegResponse>(response.Content.ReadAsStringAsync().GetAwaiter().GetResult());
-            TextWriter tw = new StreamWriter(configPath + "\\id.conf");
+            TextWriter tw = new StreamWriter(configFilePath);
             tw.WriteLine(resp.id);
             QRCodeGenerator qrGenerator = new QRCodeGenerator();
             QRCodeData qrCodeData = qrGenerator.CreateQrCode((qruri + resp.id), QRCodeGenerator.ECCLevel.H);
@@ -104,7 +115,7 @@ namespace PS2Fas
             pubStringWriter.Flush();
             pubStringWriter.Close();
 
-            File.WriteAllText(configPath + "\\pub.pem", pubStringWriter.ToString());
+            File.WriteAllText(pubPemFilePath, pubStringWriter.ToString());
 
             var stringWriter = new StringWriter();
             var pemWriter = new PemWriter(stringWriter);
@@ -112,7 +123,7 @@ namespace PS2Fas
             stringWriter.Flush();
             stringWriter.Close();
 
-            File.WriteAllText(configPath + "\\rsa.pem", stringWriter.ToString());
+            File.WriteAllText(rsaPemFilePath, stringWriter.ToString());
         }
 
         //methods from browser extension and maybe future to dos
@@ -125,6 +136,8 @@ namespace PS2Fas
 
         public String GetOTP(String domain)
         {
+            //TO DO: Add better validation and parsing of domains
+            
             String domainJson = "{\"domain\": \"" + domain + "\"}";
             var rtcontent = new StringContent(domainJson, Encoding.UTF8, "application/json");
             var rtresponse = client.PostAsync($"/browser_extensions/{extensionId}/commands/request_2fa_token", rtcontent).Result;
@@ -144,6 +157,13 @@ namespace PS2Fas
                 {
                     if (y <= DateTime.Now)
                     {
+                        var errorjson = "{\"status\": \"terminated\"}";
+                        var ercontent = new StringContent(errorjson, Encoding.UTF8, "application/json");
+                        var erresponse = client.PostAsync($"browser_extensions/{extensionId}/2fa_requests/{token_request_id}/commands/close_2fa_request", ercontent).Result;
+                        var errtext = erresponse.Content.ReadAsStringAsync().GetAwaiter().GetResult();
+                        ercontent.Dispose();
+                        erresponse.Dispose();
+                        ws.Close();
                         throw new Exception("Get token timed out");
                     }
 
@@ -161,7 +181,7 @@ namespace PS2Fas
 
             byte[] data = Convert.FromBase64String(token_event.token);
 
-            PemReader pr = new PemReader(File.OpenText(configPath + "\\rsa.pem"));
+            PemReader pr = new PemReader(File.OpenText(rsaPemFilePath));
             AsymmetricCipherKeyPair KeyPair = (AsymmetricCipherKeyPair)pr.ReadObject();
             pr.Dispose();
             var cipher = new OaepEncoding(new RsaEngine(),new Sha512Digest());
@@ -220,13 +240,13 @@ namespace PS2Fas
         {
             if (PS2FasInstance.CheckRegister() && (Force != true))
             {
-                ErrorRecord error = new ErrorRecord(new Exception("Only call Connect-2FAS to do inital config, to replace config use -Force"), "Configured", ErrorCategory.ConnectionError, this);
+                ErrorRecord error = new ErrorRecord(new Exception("Only call Connect-2FAS to do inital config, to delete and replace config use -Force"), "Configured", ErrorCategory.ConnectionError, this);
                 WriteError(error);
                 return;
             }
 
-            PS2FasInstance.Register();
-            String regResult = "Registration Successful\n" + File.ReadAllText(PS2FasInstance.configPath + "\\id.conf") + "Scan above QRCode in 2FAS under Settings->Browser Extention->Add New\n";
+            PS2FasInstance.Register(force);
+            String regResult = "Registration Successful\n" + File.ReadAllText(PS2FasInstance.configFilePath) + "Scan above QRCode in 2FAS under Settings->Browser Extention->Add New\n";
 
             WriteObject(regResult);
         }
