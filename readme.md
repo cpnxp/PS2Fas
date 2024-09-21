@@ -1,6 +1,12 @@
 # PS2Fas
 This is an unoffical PowerShell client for 2FAS Auth.  It was made by connecting to the Browser extension API.
 
+## Install
+The module is now on the PSGallery, you can install it by using Install-Module
+```PowerShell
+Install-Module -Name PS2Fas
+```
+
 ## Build
 Built using Visual Studio Community 2022. This project uses several libraries that are included as NuGet deps.
 Build this using the following command. Tested on Windows and Linux, might work on Macs?
