@@ -39,7 +39,10 @@ Get-2FasOTP -Domain "https://github.com"
 
 This will return just your current 6 digit code after the request has been approved on the phone app.
 The request will timeout after two minutes if it is rejected or ignored and will return an exception.
-
+The timeout can be changed by passing -Timeout and a number of minutes (ex. ```-Timeout 5```)  Domain
+must be a well formated URL or the prompt on your 2FAS will be empty.  At a later time I may add some
+code to deal with this so anything can be entered and converted into a valid non routeable URL usable for 
+autosending tokens.
 
 ## Acknowledgements
 This module is made using the following BouncyCastle.Cryptography, Newtonsoft.Json, websocketsharp.core and

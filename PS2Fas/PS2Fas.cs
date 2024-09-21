@@ -1,10 +1,11 @@
 ﻿using System;
 using System.IO;
 using System.Linq;
+using System.Net.Http;
 using System.Management.Automation;
 using System.Management.Automation.Runspaces;
 using System.Text;
-using System.Net.Http;
+using System.Threading;
 using Org.BouncyCastle.Crypto;
 using Org.BouncyCastle.Crypto.Generators;
 using Org.BouncyCastle.Crypto.Prng;
@@ -30,8 +31,9 @@ namespace PS2Fas
         public static String rsaPemFilePath = Path.Combine(configPath, "rsa.pem");
         public String extensionId;
         private static readonly HttpClient client = new HttpClient();
+        public int timeout;
 
-        public PS2FasInstance()
+        public PS2FasInstance(int timeout)
         {
             if (!CheckRegister())
             {
@@ -40,7 +42,7 @@ namespace PS2Fas
             }
 
             extensionId = File.ReadLines(configFilePath).First();
-            
+            this.timeout = timeout;
         }
 
         static PS2FasInstance()
@@ -145,31 +147,60 @@ namespace PS2Fas
             var token_request_id = token_request.token_request_id;
             rtcontent.Dispose();
             rtresponse.Dispose();
-            
             OTPEvent token_event = null;
+
+            bool abort = false;
+
+            Console.CancelKeyPress += (sender, eventArgs) => {
+                eventArgs.Cancel = true;
+                abort = true;
+            };
+
             using (var ws = new WebSocket(wssapi + $"/browser_extensions/{extensionId}/2fa_requests/{token_request_id}"))
             {
-                ws.OnMessage += (sender, e) => { token_event = JsonConvert.DeserializeObject<OTPEvent>(e.Data); };
+                Action cleanup = () =>
+                {
+                    var errorjson = "{\"status\": \"terminated\"}";
+                    var ercontent = new StringContent(errorjson, Encoding.UTF8, "application/json");
+                    var erresponse = client.PostAsync($"browser_extensions/{extensionId}/2fa_requests/{token_request_id}/commands/close_2fa_request", ercontent).Result;
+                    var errtext = erresponse.Content.ReadAsStringAsync().GetAwaiter().GetResult();
+                    ercontent.Dispose();
+                    erresponse.Dispose();
+                    ws.Close();
+                };
+
+                ws.OnMessage += (sender, e) =>
+                { 
+                    token_event = JsonConvert.DeserializeObject<OTPEvent>(e.Data); 
+                };
+
                 ws.Connect();
-                DateTime y = (DateTime.Now).AddMinutes(2);
+                DateTime y = (DateTime.Now).AddMinutes(timeout);
 
                 do
                 {
+                    if (abort)
+                    {
+                        cleanup();
+                        break;
+                    }
+                    
                     if (y <= DateTime.Now)
                     {
-                        var errorjson = "{\"status\": \"terminated\"}";
-                        var ercontent = new StringContent(errorjson, Encoding.UTF8, "application/json");
-                        var erresponse = client.PostAsync($"browser_extensions/{extensionId}/2fa_requests/{token_request_id}/commands/close_2fa_request", ercontent).Result;
-                        var errtext = erresponse.Content.ReadAsStringAsync().GetAwaiter().GetResult();
-                        ercontent.Dispose();
-                        erresponse.Dispose();
-                        ws.Close();
+                        cleanup();
                         throw new Exception("Get token timed out");
                     }
+                    
+                    Thread.Sleep(1000);
 
                 } while (token_event == null || token_event.status == "pending");
 
                 ws.Close();
+            }
+
+            if (abort)
+            {
+                throw new Exception("User aborted");
             }
 
             var closejson = "{\"status\": \"completed\"}";
@@ -191,6 +222,7 @@ namespace PS2Fas
             return decrypted;
         }
     }
+
     //Helper class for registering
     public class BrowserInfo
     {
@@ -263,6 +295,11 @@ namespace PS2Fas
             ValueFromPipeline = true,
             ValueFromPipelineByPropertyName = true)]
         public String Domain { get; set; }
+        [Parameter(
+            Position = 1,
+            ValueFromPipeline = true,
+            ValueFromPipelineByPropertyName = true)]
+        public int Timeout { get; set; } = 2;
 
         // This method will be called for each input received from the pipeline to this cmdlet; if no input is received, this method is not called
         protected override void ProcessRecord()
@@ -275,7 +312,7 @@ namespace PS2Fas
             }
 
             WriteVerbose("Setting up client");
-            PS2FasInstance client = new PS2FasInstance();
+            PS2FasInstance client = new PS2FasInstance(Timeout);
             String OTP = null;
 
             WriteVerbose("Getting OTP");
